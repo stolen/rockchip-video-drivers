@@ -35,80 +35,13 @@ static void rga_current_mm_read_unlock(struct mm_struct *mm)
 static int rga_get_user_pages_from_vma(struct page **pages, unsigned long Memory,
 				       uint32_t pageCount, struct mm_struct *current_mm)
 {
-	int ret = 0;
-	int i;
-	struct vm_area_struct *vma;
-	spinlock_t *ptl;
-	pte_t *pte;
-	pgd_t *pgd;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-	p4d_t *p4d;
-#endif
-	pud_t *pud;
-	pmd_t *pmd;
-	unsigned long pfn;
 
-	for (i = 0; i < pageCount; i++) {
-		vma = find_vma(current_mm, (Memory + i) << PAGE_SHIFT);
-		if (!vma) {
-			rga_err("page[%d] failed to get vma\n", i);
-			ret = RGA_OUT_OF_RESOURCES;
-			break;
-		}
+	// removed code with now-unavailable pte_offset_map_lock, always report error now
 
-		pgd = pgd_offset(current_mm, (Memory + i) << PAGE_SHIFT);
-		if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd))) {
-			rga_err("page[%d] failed to get pgd\n", i);
-			ret = RGA_OUT_OF_RESOURCES;
-			break;
-		}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-		/*
-		 * In the four-level page table,
-		 * it will do nothing and return pgd.
-		 */
-		p4d = p4d_offset(pgd, (Memory + i) << PAGE_SHIFT);
-		if (p4d_none(*p4d) || unlikely(p4d_bad(*p4d))) {
-			rga_err("page[%d] failed to get p4d\n", i);
-			ret = RGA_OUT_OF_RESOURCES;
-			break;
-		}
+	rga_err("Only get buffer %d byte from vma, but current image required %d byte",
+			0, (int)(pageCount * PAGE_SIZE));
 
-		pud = pud_offset(p4d, (Memory + i) << PAGE_SHIFT);
-#else
-		pud = pud_offset(pgd, (Memory + i) << PAGE_SHIFT);
-#endif
-
-		if (pud_none(*pud) || unlikely(pud_bad(*pud))) {
-			rga_err("page[%d] failed to get pud\n", i);
-			ret = RGA_OUT_OF_RESOURCES;
-			break;
-		}
-		pmd = pmd_offset(pud, (Memory + i) << PAGE_SHIFT);
-		if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd))) {
-			rga_err("page[%d] failed to get pmd\n", i);
-			ret = RGA_OUT_OF_RESOURCES;
-			break;
-		}
-		pte = pte_offset_map_lock(current_mm, pmd,
-					  (Memory + i) << PAGE_SHIFT, &ptl);
-		if (pte_none(*pte)) {
-			rga_err("page[%d] failed to get pte\n", i);
-			pte_unmap_unlock(pte, ptl);
-			ret = RGA_OUT_OF_RESOURCES;
-			break;
-		}
-
-		pfn = pte_pfn(*pte);
-		pages[i] = pfn_to_page(pfn);
-		pte_unmap_unlock(pte, ptl);
-	}
-
-	if (ret == RGA_OUT_OF_RESOURCES && i > 0)
-		rga_err("Only get buffer %d byte from vma, but current image required %d byte",
-			(int)(i * PAGE_SIZE), (int)(pageCount * PAGE_SIZE));
-
-	return ret;
+	return RGA_OUT_OF_RESOURCES;
 }
 
 static int rga_get_user_pages(struct page **pages, unsigned long Memory,
@@ -133,9 +66,12 @@ static int rga_get_user_pages(struct page **pages, unsigned long Memory,
 	result = get_user_pages_remote(current, current_mm,
 				       Memory << PAGE_SHIFT,
 				       pageCount, writeFlag ? FOLL_WRITE : 0, pages, NULL, NULL);
-#else
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0) // not sure about 6.1.0
 	result = get_user_pages_remote(current_mm, Memory << PAGE_SHIFT,
 				       pageCount, writeFlag ? FOLL_WRITE : 0, pages, NULL, NULL);
+#else
+	result = get_user_pages_remote(current_mm, Memory << PAGE_SHIFT,
+				       pageCount, writeFlag ? FOLL_WRITE : 0, pages, NULL);
 #endif
 
 	if (result > 0 && result >= pageCount) {
@@ -256,11 +192,6 @@ static int rga_alloc_virt_addr(struct rga_virt_addr **virt_addr_p,
 
 	/* alloc pages and page_table */
 	order = get_order(count * sizeof(struct page *));
-	if (order >= MAX_ORDER) {
-		rga_err("Can not alloc pages with order[%d] for viraddr pages, max_order = %d\n",
-			order, MAX_ORDER);
-		return -ENOMEM;
-	}
 
 	pages = (struct page **)__get_free_pages(GFP_KERNEL, order);
 	if (pages == NULL) {
@@ -1213,11 +1144,6 @@ static int rga_mm_set_mmu_base(struct rga_job *job,
 
 		if (job->flags & RGA_JOB_USE_HANDLE) {
 			order = get_order(page_count * sizeof(uint32_t *));
-			if (order >= MAX_ORDER) {
-				rga_job_err(job, "Can not alloc pages with order[%d] for page_table, max_order = %d\n",
-					order, MAX_ORDER);
-				return -ENOMEM;
-			}
 
 			page_table = (uint32_t *)__get_free_pages(GFP_KERNEL | GFP_DMA32, order);
 			if (page_table == NULL) {
@@ -1278,11 +1204,6 @@ static int rga_mm_set_mmu_base(struct rga_job *job,
 
 		if (job->flags & RGA_JOB_USE_HANDLE) {
 			order = get_order(page_count * sizeof(uint32_t *));
-			if (order >= MAX_ORDER) {
-				rga_job_err(job, "Can not alloc pages with order[%d] for page_table, max_order = %d\n",
-					order, MAX_ORDER);
-				return -ENOMEM;
-			}
 
 			page_table = (uint32_t *)__get_free_pages(GFP_KERNEL | GFP_DMA32, order);
 			if (page_table == NULL) {

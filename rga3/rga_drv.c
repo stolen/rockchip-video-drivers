@@ -1425,14 +1425,12 @@ pm_disable:
 	return ret;
 }
 
-static int rga_drv_remove(struct platform_device *pdev)
+static void rga_drv_remove(struct platform_device *pdev)
 {
 #ifndef RGA_DISABLE_PM
 	device_init_wakeup(&pdev->dev, false);
 	pm_runtime_disable(&pdev->dev);
 #endif /* #ifndef RGA_DISABLE_PM */
-
-	return 0;
 }
 
 static struct platform_driver rga3_driver = {
